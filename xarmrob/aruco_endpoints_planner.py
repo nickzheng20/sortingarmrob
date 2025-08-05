@@ -112,18 +112,42 @@ class ArucoEndpointsPlanner(Node):
         for id, start in self.object_dict.items():
             start[0] -= 0.05
             start[2] = 0.09
-            self.debug_msg.data = f"Sorting object {id} at: {start}"
-            self.pub_debug_msg.publish(self.debug_msg)
             midpoint = self.midpoint
             dest = self.id_to_position.get(id, None)  # Default position if ID not found
             if dest is None:
                 self.get_logger().warning(f"No destination found for ID: {id}")
+                continue
 
-            self.create_trajectory_from_endpoint(start)  # Move to midpoint
-            # Set up a timer to send the commands at the specified rate. 
-            self.end_point_timer = self.create_timer(self.movement_time_ms/1000, self.send_endpoint_desired,callback_group=ReentrantCallbackGroup())
+            self.debug_msg.data = f"Sorting object {id} at: {start} -> {dest}"
+            self.pub_debug_msg.publish(self.debug_msg)
 
-            # pick up the object
+            # Move above the object, then to the object, and finally to its destination
+            self.move_to(self.midpoint)
+            self.move_to(start)
+            self.move_to(self.midpoint)
+            self.move_to(dest)
+            self.move_to(self.midpoint)
+
+        self.get_logger().info("Finished sorting all detected objects")
+
+    def set_gripper(self, angle):
+        pass
+
+    def hold_gripper(self):
+        pass
+
+    def release_gripper(self):
+        pass
+
+    def move_to(self, new_xyz_goal):
+        """Create and execute a trajectory to the specified endpoint."""
+        self.create_trajectory_from_endpoint(new_xyz_goal)
+        while self.idx < len(self.disp_traj):
+            self.send_endpoint_desired()
+            time.sleep(self.movement_time_ms / 1000)
+        self.old_xyz_goal = list(new_xyz_goal)
+        self.debug_msg.data = f"Moving to: {new_xyz_goal}"
+        self.pub_debug_msg.publish(self.debug_msg)
 
 
     # Callback to publish the endpoint at the specified rate. 
@@ -274,21 +298,15 @@ class ArucoEndpointsPlanner(Node):
     def aruco_msg_processor(self, aruco_msg):
         """
         TODO:
-        Take the string message, convert it, and then translate it to the 
+        Take the string message, convert it, and then translate it to   the 
         endpoint in world coordinates from the camera's coordinate.
         add the aruco_msg to the offset position of the camera, and then apply the trasition matrixs to get the position of the camera
         """
-        # if self.aruco_msg_cnt >= 5:
-        #     return
-        # self.aruco_msg_cnt += 1 
         # if not self.camera_updating:
         #     return
-        # print(f"Received ARUCO message: {aruco_msg}")
+        
         joint_angles = self.initial_joint_angles  # Get the joint angles from the class attribute
         self.transform_to_world_coordinates(aruco_msg, joint_angles)
-        # print(f"Endpoint Position: {pos_endpoint}")
-        # self.endpoint_desired_msg.xyz = pos_endpoint
-        # self.pub_object_pos.publish(self.endpoint_desired_msg)
 
     
 
