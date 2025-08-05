@@ -109,21 +109,28 @@ class ArucoEndpointsPlanner(Node):
         self.timer.cancel()  # Cancel the timer to stop sending endpoint commands
 
     def start_sorting(self):
-        for id, start in self.object_dict.items():
+        # Iterate over detected objects and move them to their destination.
+        for id, start in sorted(self.object_dict.items()):
+            # Adjust start position slightly to account for gripper offset
             start[0] -= 0.05
             start[2] = 0.09
-            self.debug_msg.data = f"Sorting object {id} at: {start}"
-            self.pub_debug_msg.publish(self.debug_msg)
-            midpoint = self.midpoint
-            dest = self.id_to_position.get(id, None)  # Default position if ID not found
+
+            dest = self.id_to_position.get(id, None)
             if dest is None:
                 self.get_logger().warning(f"No destination found for ID: {id}")
+                continue
 
-            self.create_trajectory_from_endpoint(start)  # Move to midpoint
-            # Set up a timer to send the commands at the specified rate. 
-            self.end_point_timer = self.create_timer(self.movement_time_ms/1000, self.send_endpoint_desired,callback_group=ReentrantCallbackGroup())
+            self.debug_msg.data = f"Sorting object {id} at: {start} -> {dest}"
+            self.pub_debug_msg.publish(self.debug_msg)
 
-            # pick up the object
+            # Move above the object, then to the object, and finally to its destination
+            self.move_to(self.midpoint)
+            self.move_to(start)
+            self.move_to(self.midpoint)
+            self.move_to(dest)
+            self.move_to(self.midpoint)
+
+        self.get_logger().info("Finished sorting all detected objects")
 
 
     # Callback to publish the endpoint at the specified rate. 
@@ -143,11 +150,19 @@ class ArucoEndpointsPlanner(Node):
     def create_trajectory_from_endpoint(self, new_xyz_goal):
         # Do linear or minimum jerk interpolation
         self.t,self.disp_traj = smoo.minimum_jerk_interpolation(np.array(self.old_xyz_goal), np.array(new_xyz_goal), self.endpoint_speed, self.command_frequency)
-        
+
         # Reset counter and wait until the trajectory has been played
         self.idx = 0
         # while self.idx < len(self.disp_traj):
         #     time.sleep(0.1)
+
+    def move_to(self, new_xyz_goal):
+        """Create and execute a trajectory to the specified endpoint."""
+        self.create_trajectory_from_endpoint(new_xyz_goal)
+        while self.idx < len(self.disp_traj):
+            self.send_endpoint_desired()
+            time.sleep(self.movement_time_ms / 1000)
+        self.old_xyz_goal = list(new_xyz_goal)
 
     def joint_states_callback(self, joint_states_msg: JointState):
         self.joint_angles = joint_states_msg.position  # Get the joint angles from the message
@@ -274,15 +289,13 @@ class ArucoEndpointsPlanner(Node):
     def aruco_msg_processor(self, aruco_msg):
         """
         TODO:
-        Take the string message, convert it, and then translate it to the 
+        Take the string message, convert it, and then translate it to the
         endpoint in world coordinates from the camera's coordinate.
         add the aruco_msg to the offset position of the camera, and then apply the trasition matrixs to get the position of the camera
         """
-        # if self.aruco_msg_cnt >= 5:
-        #     return
-        # self.aruco_msg_cnt += 1 
-        # if not self.camera_updating:
-        #     return
+        # Ignore messages once we have switched to sorting mode
+        if not self.camera_updating:
+            return
         # print(f"Received ARUCO message: {aruco_msg}")
         joint_angles = self.initial_joint_angles  # Get the joint angles from the class attribute
         self.transform_to_world_coordinates(aruco_msg, joint_angles)
