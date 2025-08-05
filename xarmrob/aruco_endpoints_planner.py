@@ -19,6 +19,7 @@ from xarmrob_interfaces.msg import ME439PointXYZ
 import xarmrob.smooth_interpolation as smoo 
 
 from example_interfaces.msg import String
+from example_interfaces.msg import Float32
 from sensor_msgs.msg import JointState
 
 ## Define a temporary function using Python "lambda" functionality to print colored text
@@ -58,10 +59,11 @@ class ArucoEndpointsPlanner(Node):
         #   # new parameters
         # =============================================================================
         self.sub_aruco = self.create_subscription(String, '/aruco', self.aruco_msg_processor, 1)
-        
         # self.sub_joint_angles = self.create_subscription(JointState, '/joint_angles_desired', self.joint_states_callback, 1)
+        
         self.pub_joint_angles = self.create_publisher(JointState, '/joint_angles_desired', 1, callback_group=ReentrantCallbackGroup())
         self.pub_object_pos = self.create_publisher(ME439PointXYZ,'/object_pos',1,callback_group=ReentrantCallbackGroup())
+        self.pub_gripper_desired = self.create_publisher(Float32, '/gripper_desired', 1, callback_group=ReentrantCallbackGroup())
 
         self.y_rotation_sign = np.sign(self.declare_parameter('y_rotation_sign',1).value)
         
@@ -76,7 +78,8 @@ class ArucoEndpointsPlanner(Node):
         self.r_6cam = np.column_stack(self.declare_parameter('camera_offset',[0.117, -0.015, 0.037]).value).transpose()
 
         # initialize parameter
-        self.id_to_position = {23: [0.0, -0.2, 0.1]}
+        self.id_to_position = {23: [0.0, -0.2, 0.1], 
+                                6: [0.0, 0.2, 0.1]}
         self.camera_updating = True
         self.object_dict = {} # {id: [x_world, y_world, z_world]}
         self.midpoint = self.declare_parameter('midpoint', [0.15, 0.0, 0.15]).value  # midpoint for the robot to move to before sorting
@@ -95,22 +98,28 @@ class ArucoEndpointsPlanner(Node):
         Switch to the sorting mode, where the robot will sort the object.
         """
         if self.object_dict == {}:
-            self.get_logger().info(coloredtext(255, 0, 0, "No objects detected. Cannot switch to sorting mode."))
+            self.get_logger().info(coloredtext(255, 0, 0, "No objects detected. Waiting for the initial object(s)"))
             # TODO: BUG: 30% not posing correctly
             self.publish_joint_angles(self.initial_joint_angles)
             return
         self.get_logger().info(f"Using object dictionary : {self.object_dict}")
 
         self.camera_updating = False
-        self.get_logger().info(coloredtext(0, 255, 0, "Switching to grasp mode."))
         
+        self.get_logger().info(coloredtext(0, 255, 0, "Objects detected. Switching to sorting mode."))
         self.start_sorting()
+        time.sleep(2)  # Wait for 2 seconds before checking for new objects
+            # else:
+            #     self.get_logger().info(coloredtext(255, 0, 0, "No objects detected. Switching to idle mode."))
+            #     break
+        
+        # self.get_logger().info(coloredtext(255, 0, 0, "No more objects detected."))
 
         self.timer.cancel()  # Cancel the timer to stop sending endpoint commands
 
     def start_sorting(self):
         for id, start in self.object_dict.items():
-            start[0] -= 0.05
+            start[0] -= 0.055
             start[2] = 0.09
             midpoint = self.midpoint
             dest = self.id_to_position.get(id, None)  # Default position if ID not found
@@ -125,18 +134,22 @@ class ArucoEndpointsPlanner(Node):
             self.move_to(self.midpoint)
             self.move_to(start)
             self.hold_gripper()
-            time.sleep(1)  # Wait for the gripper to hold the object
+            time.sleep(1.5)  # Wait for the gripper to hold the object
             self.move_to(self.midpoint)
             self.move_to(dest)
+            self.release_gripper()
+            time.sleep(1.5)  # Wait for the gripper to release the object
             self.move_to(self.midpoint)
+            # Remove the sorted object from the dictionary
+            del self.object_dict[id]
 
         self.get_logger().info("Finished sorting all detected objects")
 
     def set_gripper(self, angle):
-        pass
-        # current = ?
-        # current[-1] = angle
-        # self.publish_joint_angles(current)
+        gripper_msg = Float32()
+        gripper_msg.data = angle
+        self.pub_gripper_desired.publish(gripper_msg)
+        self.debug_msg.data = f"Setting gripper to: {angle}"
 
     def hold_gripper(self):
         self.set_gripper(1.3)  
@@ -179,6 +192,8 @@ class ArucoEndpointsPlanner(Node):
         #     time.sleep(0.1)
 
     def joint_states_callback(self, joint_states_msg: JointState):
+        self.debug_msg.data = f"current joint angle desired: {joint_states_msg.position}"
+        self.pub_debug_msg.publish(self.debug_msg)
         self.joint_angles = joint_states_msg.position  # Get the joint angles from the message
 
     def aruco_msg_decoder(self, aruco_msg: String):
@@ -328,9 +343,11 @@ def main(args=None):
 
         rclpy.init(args=args)
         aruco_endpoints_planner_instance = ArucoEndpointsPlanner()
-        # executor = MultiThreadedExecutor()
-        rclpy.spin(aruco_endpoints_planner_instance)
-        
+        # thrd = threading.Thread(target=aruco_endpoints_planner_instance.start_sorting())
+        # thrd.start()
+        executor = MultiThreadedExecutor()
+        rclpy.spin(aruco_endpoints_planner_instance,executor=executor)
+
     except: 
         traceback.print_exc(limit=1)
         

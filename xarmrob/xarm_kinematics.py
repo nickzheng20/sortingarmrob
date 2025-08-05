@@ -230,6 +230,7 @@ class XArmKinematics(Node):
         self.joint_angles_desired_msg.header.stamp = self.get_clock().now().to_msg()
         self.pub_JTANG.publish(self.joint_angles_desired_msg)
     
+        # self.pub_second.publish(self.joint_angles_desired_msg)  # Publish the joint angles to the second topic for compatibility with other nodes.
     # =============================================================================
     # # Function to compute joint angles to reach the target endpoint
     # =============================================================================

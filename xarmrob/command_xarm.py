@@ -10,6 +10,7 @@ from scipy import interpolate
 # IMPORT the messages: 
 from sensor_msgs.msg import JointState
 from xarmrob_interfaces.msg import ME439JointCommand
+from std_msgs.msg import Float32
 # IMPORT the arm controller
 import xarm
 
@@ -33,6 +34,9 @@ class CommandXArm(Node):
         self.sub_bus_servo_commands = self.create_subscription(ME439JointCommand, '/bus_servo_commands', self.set_servos, 1, callback_group=ReentrantCallbackGroup())
         #   NOTE the Callback to the "self.move_servos_and_set_joint_state" method, which will command the motors directly and also compute what joint angle the system model thinks that is. 
         
+        # new subscriber for float
+        self.sub_gripper_angle = self.create_subscription(Float32, '/gripper_angle', self.set_gripper_angle, 1, callback_group=ReentrantCallbackGroup())
+
         # =============================================================================
         #   # Publisher for the digital servo motor commands. 
         # =============================================================================
@@ -135,6 +139,7 @@ class CommandXArm(Node):
             self.bus_servo_commands_msg.header.stamp = self.get_clock().now().to_msg()
             # Publish the bus servo commands, and let the handler for that message receive it. 
             self.pub_bus_servo_commands.publish(self.bus_servo_commands_msg)
+            self.joint_angles_desired = jt_all
             # # Alternatively, call the function to move the servos directly, rather than publishing the message. 
             # self.move_servos_and_set_joint_state(self.bus_servo_commands_msg)
         except ValueError: 
@@ -142,7 +147,27 @@ class CommandXArm(Node):
             # self.get_logger().error('ERROR: Value out of range. Not Publishing Joint State.')
             exc = traceback.format_exc(limit=1)
             self.get_logger().error(exc.splitlines()[-1])
-        
+
+    def set_gripper_angle(self, angle_msg):
+
+        # Pack the Commands message and publish it. 
+        try: 
+            # convert the joint state to bus servo commands
+            cmd_all = self.convert_joint_state_to_commands(jt_all)
+            self.bus_servo_commands_msg.command = cmd_all
+            self.bus_servo_commands_msg.name = ['cmd00','cmd01','cmd02','cmd03','cmd04','cmd05','cmd06']
+            self.bus_servo_commands_msg.enable = True
+            self.bus_servo_commands_msg.header.stamp = self.get_clock().now().to_msg()
+            # Publish the bus servo commands, and let the handler for that message receive it. 
+            self.pub_bus_servo_commands.publish(self.bus_servo_commands_msg)
+            self.joint_angles_desired = jt_all
+            # # Alternatively, call the function to move the servos directly, rather than publishing the message. 
+            # self.move_servos_and_set_joint_state(self.bus_servo_commands_msg)
+        except ValueError: 
+            # traceback.print_exc(limit=1)
+            # self.get_logger().error('ERROR: Value out of range. Not Publishing Joint State.')
+            exc = traceback.format_exc(limit=1)
+            self.get_logger().error(exc.splitlines()[-1])
     # =============================================================================
     #   # Callback function: receives servo commands and publishes /joint_states, e.g. for an RVIZ simulation
     def set_servos(self, msg_in):
