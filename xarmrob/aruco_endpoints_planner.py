@@ -124,6 +124,8 @@ class ArucoEndpointsPlanner(Node):
             # Move above the object, then to the object, and finally to its destination
             self.move_to(self.midpoint)
             self.move_to(start)
+            self.hold_gripper()
+            time.sleep(1)  # Wait for the gripper to hold the object
             self.move_to(self.midpoint)
             self.move_to(dest)
             self.move_to(self.midpoint)
@@ -132,12 +134,15 @@ class ArucoEndpointsPlanner(Node):
 
     def set_gripper(self, angle):
         pass
+        # current = ?
+        # current[-1] = angle
+        # self.publish_joint_angles(current)
 
     def hold_gripper(self):
-        pass
+        self.set_gripper(1.3)  
 
     def release_gripper(self):
-        pass
+        self.set_gripper(0.0)
 
     def move_to(self, new_xyz_goal):
         """Create and execute a trajectory to the specified endpoint."""
