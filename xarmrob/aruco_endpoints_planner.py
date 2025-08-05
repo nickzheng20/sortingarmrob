@@ -34,9 +34,9 @@ class ArucoEndpointsPlanner(Node):
 
 
         self.xyz_goal = [0.165, 0.0, 0.155] # roughly upright neutral with wrist at 45 degrees. Formally: [0.1646718829870224, 0.0, 0.1546700894832611]
-        self.old_xyz_goal = [0.165, 0.0, 0.155]
+        self.old_xyz_goal = [0.05, 0.0, 0.155]
         self.xyz_traj = [self.old_xyz_goal]
-        self.disp_traj = self.xyz_traj 
+        self.disp_traj = []
         self.gripper = 0
         self.idx = 0
 
@@ -53,8 +53,6 @@ class ArucoEndpointsPlanner(Node):
         self.movement_time_ms = round(1000/self.command_frequency)  # milliseconds for movement time. 
         self.endpoint_speed = self.declare_parameter('endpoint_speed',0.05).value  # nominal speed for continuous movement among points. 
         
-        # Set up a timer to send the commands at the specified rate. 
-        # self.timer = self.create_timer(self.movement_time_ms/1000, self.send_endpoint_desired,callback_group=ReentrantCallbackGroup())
 
         # =============================================================================
         #   # new parameters
@@ -78,30 +76,78 @@ class ArucoEndpointsPlanner(Node):
         self.r_6cam = np.column_stack(self.declare_parameter('camera_offset',[0.117, -0.015, 0.037]).value).transpose()
 
         # initialize parameter
+        self.id_to_position = {23: [0.0, -0.2, 0.1]}
         self.camera_updating = True
         self.object_dict = {} # {id: [x_world, y_world, z_world]}
+        self.midpoint = self.declare_parameter('midpoint', [0.15, 0.0, 0.15]).value  # midpoint for the robot to move to before sorting
+        # print object_dict
         # initialize the first position
         self.initial_joint_angles = self.declare_parameter('initial_joint_angles', [0., -2.152, 1.5707, 0., 1.419, 0., 0.]).value
         self.joint_angles_desired_msg = JointState()
-        time.sleep(2.5)
-        print("wdaiwduhawiuda", self.object_dict)
-
-        self.publish_joint_angles(self.initial_joint_angles)
         
-        # print("wdaiwduhawiuda", self.object_dict)
-        time.sleep(5)
+        self.timer = self.create_timer(3.0, self.switch_to_sorting)
+
+        self.pub_debug_msg = self.create_publisher(String, '/debug', 1)
+        self.debug_msg = String()
+
+    def switch_to_sorting(self):
+        """
+        Switch to the sorting mode, where the robot will sort the object.
+        """
+        if self.object_dict == {}:
+            self.get_logger().info(coloredtext(255, 0, 0, "No objects detected. Cannot switch to sorting mode."))
+            # TODO: BUG: 30% not posing correctly
+            self.publish_joint_angles(self.initial_joint_angles)
+            return
+        self.get_logger().info(f"Using object dictionary : {self.object_dict}")
+
         self.camera_updating = False
-    
+        self.get_logger().info(coloredtext(0, 255, 0, "Switching to grasp mode."))
+        
+        self.start_sorting()
+
+        self.timer.cancel()  # Cancel the timer to stop sending endpoint commands
+
+    def start_sorting(self):
+        for id, start in self.object_dict.items():
+            start[0] -= 0.05
+            start[2] = 0.09
+            self.debug_msg.data = f"Sorting object {id} at: {start}"
+            self.pub_debug_msg.publish(self.debug_msg)
+            midpoint = self.midpoint
+            dest = self.id_to_position.get(id, None)  # Default position if ID not found
+            if dest is None:
+                self.get_logger().warning(f"No destination found for ID: {id}")
+
+            self.create_trajectory_from_endpoint(start)  # Move to midpoint
+            # Set up a timer to send the commands at the specified rate. 
+            self.end_point_timer = self.create_timer(self.movement_time_ms/1000, self.send_endpoint_desired,callback_group=ReentrantCallbackGroup())
+
+            # pick up the object
+
 
     # Callback to publish the endpoint at the specified rate. 
     def send_endpoint_desired(self):
         # print(self.idx)
+        if self.disp_traj == []:
+            # self.get_logger().info("No trajectory to follow. Waiting for new input.")
+            return
         if self.idx>=len(self.disp_traj):
             self.idx = len(self.disp_traj) - 1
+        # self.get_logger().info(f"Sending endpoint desired: {self.disp_traj[self.idx]}")
         self.xyz_goal = self.disp_traj[self.idx]
         self.idx += 1
         self.endpoint_desired_msg.xyz = self.xyz_goal 
         self.pub_endpoint_desired.publish(self.endpoint_desired_msg)
+
+    def create_trajectory_from_endpoint(self, new_xyz_goal):
+        # Do linear or minimum jerk interpolation
+        self.t,self.disp_traj = smoo.minimum_jerk_interpolation(np.array(self.old_xyz_goal), np.array(new_xyz_goal), self.endpoint_speed, self.command_frequency)
+        
+        # Reset counter and wait until the trajectory has been played
+        self.idx = 0
+        # while self.idx < len(self.disp_traj):
+        #     time.sleep(0.1)
 
     def joint_states_callback(self, joint_states_msg: JointState):
         self.joint_angles = joint_states_msg.position  # Get the joint angles from the message
@@ -223,16 +269,7 @@ class ArucoEndpointsPlanner(Node):
         self.joint_angles_desired_msg.position = np.array(joint_angles)
         self.joint_angles_desired_msg.header.stamp = self.get_clock().now().to_msg()
         self.pub_joint_angles.publish(self.joint_angles_desired_msg)
-
-
-    def create_trajectory_from_endpoint(self, new_xyz_goal):
-        # Do linear or minimum jerk interpolation
-        self.t,self.disp_traj = smoo.minimum_jerk_interpolation(np.array(self.old_xyz_goal), np.array(new_xyz_goal), self.endpoint_speed, self.command_frequency)
         
-        # Reset counter and wait until the trajectory has been played
-        self.idx = 0
-        while self.idx < len(self.disp_traj):
-            time.sleep(0.1)
 
     def aruco_msg_processor(self, aruco_msg):
         """

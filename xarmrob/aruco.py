@@ -17,7 +17,7 @@ camera.set(cv2.CAP_PROP_FRAME_WIDTH,1280);
 camera.set(cv2.CAP_PROP_FRAME_HEIGHT,960);
 
 # What is the size of each marker - length of a side in meters (or any other unit you are working with). Used in call to "estimatePoseSingleMarkers". 
-marker_side_length = 0.061 # meters 
+marker_side_length = 0.027 # meters 
 
 #comment this out to remove live display (and some other stuff below)
 plt.figure()

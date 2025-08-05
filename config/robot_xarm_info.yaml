@@ -58,3 +58,6 @@
     camera_offset: [0.06, -0.015, 0.037]
 
     initial_joint_angles: [0., -2.152, 1.5707, 0., 1.419, 0., 0.]   # radians, for starting position (including gripper)
+    self.midpoint: [0.15, 0.0, 0.15]  # midpoint for the robot to move to before sorting
+
+    self.gripper_offset: [0.0, 0.0, 0.2]
