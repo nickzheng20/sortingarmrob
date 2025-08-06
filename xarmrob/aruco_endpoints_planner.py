@@ -89,6 +89,7 @@ class ArucoEndpointsPlanner(Node):
         self.joint_angles_desired_msg = JointState()
         
         self.timer = self.create_timer(3.0, self.switch_to_sorting)
+        # self.switch_to_sorting()
 
         self.pub_debug_msg = self.create_publisher(String, '/debug', 1)
         self.debug_msg = String()
@@ -97,17 +98,21 @@ class ArucoEndpointsPlanner(Node):
         """
         Switch to the sorting mode, where the robot will sort the object.
         """
-        if self.object_dict == {}:
-            self.get_logger().info(coloredtext(255, 0, 0, "No objects detected. Waiting for the initial object(s)"))
-            # TODO: BUG: 30% not posing correctly
-            self.publish_joint_angles(self.initial_joint_angles)
-            return
+        self.timer.cancel()  # Cancel the timer to stop sending endpoint commands
+        self.publish_joint_angles(self.initial_joint_angles)
+        # if self.object_dict == {}:
+        #     self.get_logger().info(coloredtext(255, 0, 0, "No objects detected. Waiting for the initial object(s)"))
+        #     # TODO: BUG: 30% not posing correctly
+        #     self.publish_joint_angles(self.initial_joint_angles)
+        #     return
         self.get_logger().info(f"Using object dictionary : {self.object_dict}")
 
         self.camera_updating = False
         
-        self.get_logger().info(coloredtext(0, 255, 0, "Objects detected. Switching to sorting mode."))
-        self.start_sorting()
+        # self.get_logger().info(coloredtext(0, 255, 0, "Objects detected. Switching to sorting mode."))
+        self.sorting_timer = self.create_timer(3.0, self.start_sorting)
+
+        # self.start_sorting()
         time.sleep(2)  # Wait for 2 seconds before checking for new objects
             # else:
             #     self.get_logger().info(coloredtext(255, 0, 0, "No objects detected. Switching to idle mode."))
@@ -115,17 +120,19 @@ class ArucoEndpointsPlanner(Node):
         
         # self.get_logger().info(coloredtext(255, 0, 0, "No more objects detected."))
 
-        self.timer.cancel()  # Cancel the timer to stop sending endpoint commands
 
     def start_sorting(self):
-        for id, start in self.object_dict.items():
+        if self.object_dict != {}:
+            self.get_logger().info(coloredtext(0, 255, 0, f"sorting object_dict: {self.object_dict}"))
+            id, start = next(iter(self.object_dict.items()))
             start[0] -= 0.055
             start[2] = 0.09
             midpoint = self.midpoint
             dest = self.id_to_position.get(id, None)  # Default position if ID not found
             if dest is None:
                 self.get_logger().warning(f"No destination found for ID: {id}")
-                continue
+                # continue
+                return
 
             self.debug_msg.data = f"Sorting object {id} at: {start} -> {dest}"
             self.pub_debug_msg.publish(self.debug_msg)
@@ -142,6 +149,13 @@ class ArucoEndpointsPlanner(Node):
             self.move_to(self.midpoint)
             # Remove the sorted object from the dictionary
             del self.object_dict[id]
+        else:
+            self.get_logger().info(coloredtext(255, 0, 0, "No objects detected. Waiting for the initial object(s)"))
+            # TODO: BUG: 30% not posing correctly
+            self.publish_joint_angles(self.initial_joint_angles)
+            self.get_logger().info(coloredtext(0, 255, 0, f"Object_dict: {self.object_dict}"))
+            time.sleep(2)
+
 
         self.get_logger().info("Finished sorting all detected objects")
 
@@ -215,8 +229,8 @@ class ArucoEndpointsPlanner(Node):
                 # rot_vec = tuple(float(v) for v in values[4:7])
                 # decoded_data[id_] = (coords, rot_vec)
                 decoded_data[id_] = coords
-            else:
-                print(f"Skipping malformed part: {part}")
+            # else:
+                # print(f"Skipping malformed part: {part}")
         # print(decoded_data)
         self.aruco_msg_decoded = decoded_data
         # print(f"Decoded ARUCO message: {decoded_data}")
@@ -295,7 +309,7 @@ class ArucoEndpointsPlanner(Node):
 
 
         for id_ in aruco_msg_decoded:
-            print(f"Processing ARUCO ID: {id_}")
+            # print(f"Processing ARUCO ID: {id_}")
             aruco_pos = np.array((aruco_msg_decoded[id_]['x'], aruco_msg_decoded[id_]['y'], aruco_msg_decoded[id_]['z'])).reshape((3,1))  # Convert to a column vector
             # print(aruco_pos)
             r_object = aruco_pos + self.r_6cam  # Add the camera offset to the ARUCO position
@@ -317,7 +331,6 @@ class ArucoEndpointsPlanner(Node):
 
     def aruco_msg_processor(self, aruco_msg):
         """
-        TODO:
         Take the string message, convert it, and then translate it to   the 
         endpoint in world coordinates from the camera's coordinate.
         add the aruco_msg to the offset position of the camera, and then apply the trasition matrixs to get the position of the camera
