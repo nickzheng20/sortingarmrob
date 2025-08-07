@@ -19,6 +19,7 @@ from xarmrob_interfaces.msg import ME439PointXYZ
 import xarmrob.smooth_interpolation as smoo 
 
 from example_interfaces.msg import String
+from example_interfaces.msg import Float32
 from sensor_msgs.msg import JointState
 
 ## Define a temporary function using Python "lambda" functionality to print colored text
@@ -58,10 +59,11 @@ class ArucoEndpointsPlanner(Node):
         #   # new parameters
         # =============================================================================
         self.sub_aruco = self.create_subscription(String, '/aruco', self.aruco_msg_processor, 1)
-        
         # self.sub_joint_angles = self.create_subscription(JointState, '/joint_angles_desired', self.joint_states_callback, 1)
+        
         self.pub_joint_angles = self.create_publisher(JointState, '/joint_angles_desired', 1, callback_group=ReentrantCallbackGroup())
         self.pub_object_pos = self.create_publisher(ME439PointXYZ,'/object_pos',1,callback_group=ReentrantCallbackGroup())
+        self.pub_gripper_desired = self.create_publisher(Float32, '/gripper_desired', 1, callback_group=ReentrantCallbackGroup())
 
         self.y_rotation_sign = np.sign(self.declare_parameter('y_rotation_sign',1).value)
         
@@ -76,7 +78,8 @@ class ArucoEndpointsPlanner(Node):
         self.r_6cam = np.column_stack(self.declare_parameter('camera_offset',[0.117, -0.015, 0.037]).value).transpose()
 
         # initialize parameter
-        self.id_to_position = {23: [0.0, -0.2, 0.1]}
+        self.id_to_position = {23: [0.0, -0.2, 0.1], 
+                                6: [0.0, 0.2, 0.1]}
         self.camera_updating = True
         self.object_dict = {} # {id: [x_world, y_world, z_world]}
         self.midpoint = self.declare_parameter('midpoint', [0.15, 0.0, 0.15]).value  # midpoint for the robot to move to before sorting
@@ -86,6 +89,7 @@ class ArucoEndpointsPlanner(Node):
         self.joint_angles_desired_msg = JointState()
         
         self.timer = self.create_timer(3.0, self.switch_to_sorting)
+        # self.switch_to_sorting()
 
         self.pub_debug_msg = self.create_publisher(String, '/debug', 1)
         self.debug_msg = String()
@@ -94,36 +98,88 @@ class ArucoEndpointsPlanner(Node):
         """
         Switch to the sorting mode, where the robot will sort the object.
         """
-        if self.object_dict == {}:
-            self.get_logger().info(coloredtext(255, 0, 0, "No objects detected. Cannot switch to sorting mode."))
-            # TODO: BUG: 30% not posing correctly
-            self.publish_joint_angles(self.initial_joint_angles)
-            return
+        self.timer.cancel()  # Cancel the timer to stop sending endpoint commands
+        self.publish_joint_angles(self.initial_joint_angles)
+        # if self.object_dict == {}:
+        #     self.get_logger().info(coloredtext(255, 0, 0, "No objects detected. Waiting for the initial object(s)"))
+        #     # TODO: BUG: 30% not posing correctly
+        #     self.publish_joint_angles(self.initial_joint_angles)
+        #     return
         self.get_logger().info(f"Using object dictionary : {self.object_dict}")
 
         self.camera_updating = False
-        self.get_logger().info(coloredtext(0, 255, 0, "Switching to grasp mode."))
         
-        self.start_sorting()
+        # self.get_logger().info(coloredtext(0, 255, 0, "Objects detected. Switching to sorting mode."))
+        self.sorting_timer = self.create_timer(3.0, self.start_sorting)
 
-        self.timer.cancel()  # Cancel the timer to stop sending endpoint commands
+        # self.start_sorting()
+        time.sleep(2)  # Wait for 2 seconds before checking for new objects
+            # else:
+            #     self.get_logger().info(coloredtext(255, 0, 0, "No objects detected. Switching to idle mode."))
+            #     break
+        
+        # self.get_logger().info(coloredtext(255, 0, 0, "No more objects detected."))
+
 
     def start_sorting(self):
-        for id, start in self.object_dict.items():
-            start[0] -= 0.05
+        if self.object_dict != {}:
+            self.get_logger().info(coloredtext(0, 255, 0, f"sorting object_dict: {self.object_dict}"))
+            id, start = next(iter(self.object_dict.items()))
+            start[0] -= 0.055
             start[2] = 0.09
-            self.debug_msg.data = f"Sorting object {id} at: {start}"
-            self.pub_debug_msg.publish(self.debug_msg)
             midpoint = self.midpoint
             dest = self.id_to_position.get(id, None)  # Default position if ID not found
             if dest is None:
                 self.get_logger().warning(f"No destination found for ID: {id}")
+                # continue
+                return
 
-            self.create_trajectory_from_endpoint(start)  # Move to midpoint
-            # Set up a timer to send the commands at the specified rate. 
-            self.end_point_timer = self.create_timer(self.movement_time_ms/1000, self.send_endpoint_desired,callback_group=ReentrantCallbackGroup())
+            self.debug_msg.data = f"Sorting object {id} at: {start} -> {dest}"
+            self.pub_debug_msg.publish(self.debug_msg)
 
-            # pick up the object
+            # Move above the object, then to the object, and finally to its destination
+            self.move_to(self.midpoint)
+            self.move_to(start)
+            self.hold_gripper()
+            time.sleep(1.5)  # Wait for the gripper to hold the object
+            self.move_to(self.midpoint)
+            self.move_to(dest)
+            self.release_gripper()
+            time.sleep(1.5)  # Wait for the gripper to release the object
+            self.move_to(self.midpoint)
+            # Remove the sorted object from the dictionary
+            del self.object_dict[id]
+        else:
+            self.get_logger().info(coloredtext(255, 0, 0, "No objects detected. Waiting for the initial object(s)"))
+            # TODO: BUG: 30% not posing correctly
+            self.publish_joint_angles(self.initial_joint_angles)
+            self.get_logger().info(coloredtext(0, 255, 0, f"Object_dict: {self.object_dict}"))
+            time.sleep(2)
+
+
+        self.get_logger().info("Finished sorting all detected objects")
+
+    def set_gripper(self, angle):
+        gripper_msg = Float32()
+        gripper_msg.data = angle
+        self.pub_gripper_desired.publish(gripper_msg)
+        self.debug_msg.data = f"Setting gripper to: {angle}"
+
+    def hold_gripper(self):
+        self.set_gripper(1.3)  
+
+    def release_gripper(self):
+        self.set_gripper(0.0)
+
+    def move_to(self, new_xyz_goal):
+        """Create and execute a trajectory to the specified endpoint."""
+        self.create_trajectory_from_endpoint(new_xyz_goal)
+        while self.idx < len(self.disp_traj):
+            self.send_endpoint_desired()
+            time.sleep(self.movement_time_ms / 1000)
+        self.old_xyz_goal = list(new_xyz_goal)
+        self.debug_msg.data = f"Moving to: {new_xyz_goal}"
+        self.pub_debug_msg.publish(self.debug_msg)
 
 
     # Callback to publish the endpoint at the specified rate. 
@@ -150,6 +206,8 @@ class ArucoEndpointsPlanner(Node):
         #     time.sleep(0.1)
 
     def joint_states_callback(self, joint_states_msg: JointState):
+        self.debug_msg.data = f"current joint angle desired: {joint_states_msg.position}"
+        self.pub_debug_msg.publish(self.debug_msg)
         self.joint_angles = joint_states_msg.position  # Get the joint angles from the message
 
     def aruco_msg_decoder(self, aruco_msg: String):
@@ -171,8 +229,8 @@ class ArucoEndpointsPlanner(Node):
                 # rot_vec = tuple(float(v) for v in values[4:7])
                 # decoded_data[id_] = (coords, rot_vec)
                 decoded_data[id_] = coords
-            else:
-                print(f"Skipping malformed part: {part}")
+            # else:
+                # print(f"Skipping malformed part: {part}")
         # print(decoded_data)
         self.aruco_msg_decoded = decoded_data
         # print(f"Decoded ARUCO message: {decoded_data}")
@@ -251,7 +309,7 @@ class ArucoEndpointsPlanner(Node):
 
 
         for id_ in aruco_msg_decoded:
-            print(f"Processing ARUCO ID: {id_}")
+            # print(f"Processing ARUCO ID: {id_}")
             aruco_pos = np.array((aruco_msg_decoded[id_]['x'], aruco_msg_decoded[id_]['y'], aruco_msg_decoded[id_]['z'])).reshape((3,1))  # Convert to a column vector
             # print(aruco_pos)
             r_object = aruco_pos + self.r_6cam  # Add the camera offset to the ARUCO position
@@ -273,22 +331,15 @@ class ArucoEndpointsPlanner(Node):
 
     def aruco_msg_processor(self, aruco_msg):
         """
-        TODO:
-        Take the string message, convert it, and then translate it to the 
+        Take the string message, convert it, and then translate it to   the 
         endpoint in world coordinates from the camera's coordinate.
         add the aruco_msg to the offset position of the camera, and then apply the trasition matrixs to get the position of the camera
         """
-        # if self.aruco_msg_cnt >= 5:
-        #     return
-        # self.aruco_msg_cnt += 1 
         # if not self.camera_updating:
         #     return
-        # print(f"Received ARUCO message: {aruco_msg}")
+        
         joint_angles = self.initial_joint_angles  # Get the joint angles from the class attribute
         self.transform_to_world_coordinates(aruco_msg, joint_angles)
-        # print(f"Endpoint Position: {pos_endpoint}")
-        # self.endpoint_desired_msg.xyz = pos_endpoint
-        # self.pub_object_pos.publish(self.endpoint_desired_msg)
 
     
 
@@ -305,9 +356,11 @@ def main(args=None):
 
         rclpy.init(args=args)
         aruco_endpoints_planner_instance = ArucoEndpointsPlanner()
-        # executor = MultiThreadedExecutor()
-        rclpy.spin(aruco_endpoints_planner_instance)
-        
+        # thrd = threading.Thread(target=aruco_endpoints_planner_instance.start_sorting())
+        # thrd.start()
+        executor = MultiThreadedExecutor()
+        rclpy.spin(aruco_endpoints_planner_instance,executor=executor)
+
     except: 
         traceback.print_exc(limit=1)
         
